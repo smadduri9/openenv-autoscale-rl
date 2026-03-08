@@ -17,6 +17,42 @@ const SPEEDS = [
   { label: "4x", ms: 120 }
 ];
 
+const FAMILY_LABELS = {
+  steady: "Steady Load",
+  sustained_spike: "Sustained Spike",
+  transient_spike: "Transient Spike",
+  cyclical: "Cyclical Demand",
+  drifting_noisy: "Drifting Demand",
+  traffic_spike: "Traffic Spike",
+  bad_deploy: "Bad Deploy",
+  dependency_slowdown: "Dependency Slowdown"
+};
+
+function toTitle(value) {
+  return String(value || "")
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function getScenarioLabel(family) {
+  return FAMILY_LABELS[family] || toTitle(family);
+}
+
+function getScenarioNumber(traceId) {
+  const match = String(traceId || "").match(/_(\d+)$/);
+  if (!match) return null;
+  return Number(match[1]) + 1;
+}
+
+function getTraceDisplayName(trace) {
+  const scenario = getScenarioLabel(trace?.family);
+  const number = getScenarioNumber(trace?.trace_id);
+  if (number !== null && Number.isFinite(number)) return `${scenario} ${number}`;
+  return scenario;
+}
+
 function Panel({ title, frame, totalReward }) {
   if (!frame) return <div className="card">No frame data</div>;
   const badges = [];
@@ -61,12 +97,13 @@ function SummaryCards({ replay, mode }) {
   const r = replay.rl;
   const hMetrics = h?.metrics || {};
   const rMetrics = r?.metrics || {};
+  const scenarioName = getTraceDisplayName(replay);
   return (
     <div className="summary-grid">
       <div className="summary-card">
-        <p className="summary-label">Trace</p>
-        <h2>{replay.trace_id}</h2>
-        <p>{replay.family}</p>
+        <p className="summary-label">Scenario</p>
+        <h2>{scenarioName}</h2>
+        <p className="summary-subtext">Trace ref: {replay.trace_id}</p>
       </div>
       <div className="summary-card">
         <p className="summary-label">Heuristic Total Reward</p>
@@ -82,16 +119,16 @@ function SummaryCards({ replay, mode }) {
         </p>
       </div>
       <div className="summary-card">
-        <p className="summary-label">Comparison</p>
+        <p className="summary-label">Policy Delta</p>
         <h2>
           {mode === "compare" && r
-            ? `${(r.total_reward - h.total_reward).toFixed(4)} Δ reward`
-            : "Enable compare mode"}
+            ? `${(r.total_reward - h.total_reward).toFixed(4)} reward delta`
+            : "Switch to Heuristic vs RL"}
         </h2>
         <p>
           {mode === "compare" && r
-            ? `${(Number(rMetrics.drop_fraction || 0) * 100).toFixed(2)}% vs ${(Number(hMetrics.drop_fraction || 0) * 100).toFixed(2)}% drop`
-            : ""}
+            ? `${(Number(rMetrics.drop_fraction || 0) * 100).toFixed(2)}% vs ${(Number(hMetrics.drop_fraction || 0) * 100).toFixed(2)}% drop rate`
+            : "Comparison metrics appear here once both policies are visible."}
         </p>
       </div>
     </div>
@@ -200,13 +237,25 @@ export default function App() {
 
   const maxStep = Math.max(0, (replay?.heuristic?.frames?.length || 1) - 1);
   const traceCount = traces.length;
+  const selectedTraceMeta = traces.find((t) => t.index === traceIndex);
+  const selectedTraceName = selectedTraceMeta ? getTraceDisplayName(selectedTraceMeta) : "-";
+  const selectedScenario = selectedTraceMeta ? getScenarioLabel(selectedTraceMeta.family) : "-";
 
   return (
     <div className="app">
-      <h1>OpenEnv Autoscaling Judge Demo</h1>
-      <p className="subtitle">
-        Replay-first local demo for judges. Use trace selector + playback controls to inspect policy behavior.
-      </p>
+      <header className="hero">
+        <div className="hero-copy">
+          <p className="eyebrow">OpenEnv Demo Experience</p>
+          <h1>OpenEnv Autoscaling Control Center</h1>
+          <p className="subtitle">
+            Interactive simulation of policy behavior under dynamic service load.
+          </p>
+          <p className="subsubtitle">
+            Analyze decision quality, latency-pressure response, and reward trajectory with synchronized policy replay.
+          </p>
+        </div>
+        <div className="hero-pill">Live Replay</div>
+      </header>
       <div className="controls">
         <div className="trace-nav">
           <button onClick={() => setTraceIndex((v) => Math.max(0, v - 1))} disabled={traceIndex <= 0}>
@@ -220,29 +269,29 @@ export default function App() {
           </button>
         </div>
         <label>
-          Trace:
-          <select value={traceIndex} onChange={(e) => setTraceIndex(Number(e.target.value))}>
+          Scenario:
+          <select className="pretty-select" value={traceIndex} onChange={(e) => setTraceIndex(Number(e.target.value))}>
             {traces.map((t) => (
               <option key={t.index} value={t.index}>
-                {t.trace_id} ({t.family})
+                {getTraceDisplayName(t)}
               </option>
             ))}
           </select>
         </label>
         <label>
-          Mode:
-          <select value={mode} onChange={(e) => setMode(e.target.value)} disabled={!rlAvailable}>
-            <option value="heuristic">Heuristic</option>
-            <option value="rl" disabled={!rlAvailable}>RL</option>
-            <option value="compare" disabled={!rlAvailable}>Heuristic vs RL</option>
+          Policy View:
+          <select className="pretty-select" value={mode} onChange={(e) => setMode(e.target.value)} disabled={!rlAvailable}>
+            <option value="heuristic">Heuristic Baseline</option>
+            <option value="rl" disabled={!rlAvailable}>RL Policy</option>
+            <option value="compare" disabled={!rlAvailable}>Heuristic vs RL (Showcase)</option>
           </select>
         </label>
         <button onClick={() => setPlaying(true)}>Play</button>
         <button onClick={() => setPlaying(false)}>Pause</button>
         <button onClick={() => { setPlaying(false); setStepIdx(0); }}>Reset</button>
         <label>
-          Speed:
-          <select value={speedMs} onChange={(e) => setSpeedMs(Number(e.target.value))}>
+          Playback Speed:
+          <select className="pretty-select" value={speedMs} onChange={(e) => setSpeedMs(Number(e.target.value))}>
             {SPEEDS.map((s) => (
               <option key={s.label} value={s.ms}>{s.label}</option>
             ))}
@@ -261,11 +310,11 @@ export default function App() {
         </label>
       </div>
       <div className="trace-count-note">
-        Loaded traces: <strong>{traceCount}</strong>
+        Replay catalog: <strong>{traceCount}</strong> trace{traceCount === 1 ? "" : "s"}
         {traceCount <= 1 && (
           <span>
             {" "}
-            — only one trace is present in your replay JSON. Rebuild replay data with more traces to expand this list.
+            — only one trace is bundled in the loaded replay file. Include additional traces for a broader showcase.
           </span>
         )}
       </div>
@@ -274,9 +323,10 @@ export default function App() {
 
       <div className="context-row">
         <div className="context-card">
-          <strong>Scenario:</strong> {replay?.family || "-"} &nbsp; | &nbsp;
-          <strong>Trace:</strong> {replay?.trace_id || "-"} &nbsp; | &nbsp;
-          <strong>RL Replay Available:</strong> {String(replay?.rl_available ?? false)}
+          <strong>Scenario:</strong> {selectedScenario} &nbsp; | &nbsp;
+          <strong>Run:</strong> {selectedTraceName} &nbsp; | &nbsp;
+          <strong>Trace ID:</strong> {replay?.trace_id || "-"} &nbsp; | &nbsp;
+          <strong>RL Track Available:</strong> {String(replay?.rl_available ?? false)}
         </div>
       </div>
 
