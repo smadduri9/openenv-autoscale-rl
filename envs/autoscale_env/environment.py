@@ -7,7 +7,10 @@ from random import Random
 from typing import List, Mapping, TypedDict
 from uuid import uuid4
 
-from .models import AutoscaleObservation, AutoscaleState, ObservationHistory, ResetResponse, StepResponse
+try:
+    from .models import AutoscaleObservation, AutoscaleState, ObservationHistory, ResetResponse, StepResponse
+except ImportError:  # pragma: no cover - standalone/module execution fallback
+    from models import AutoscaleObservation, AutoscaleState, ObservationHistory, ResetResponse, StepResponse
 
 
 def _ensure_repo_root_on_path() -> None:

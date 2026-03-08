@@ -3,8 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..environment import AutoscaleOpenEnv
-from ..models import AutoscaleAction, AutoscaleObservation, AutoscaleState
+try:
+    from ..environment import AutoscaleOpenEnv
+    from ..models import AutoscaleAction, AutoscaleObservation, AutoscaleState
+except ImportError:  # pragma: no cover - standalone/module execution fallback
+    from environment import AutoscaleOpenEnv
+    from models import AutoscaleAction, AutoscaleObservation, AutoscaleState
 
 try:
     from openenv.core.env_server.interfaces import Environment

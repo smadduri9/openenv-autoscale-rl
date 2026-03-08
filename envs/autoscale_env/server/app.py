@@ -6,18 +6,32 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 import uvicorn
 
-from ..environment import AutoscaleOpenEnv
-from ..models import (
-    AutoscaleAction,
-    AutoscaleObservation,
-    HealthResponse,
-    ResetRequest,
-    ResetResponse,
-    StateResponse,
-    StepRequest,
-    StepResponse,
-)
-from .autoscale_environment import AutoscaleEnvironment
+try:
+    from ..environment import AutoscaleOpenEnv
+    from ..models import (
+        AutoscaleAction,
+        AutoscaleObservation,
+        HealthResponse,
+        ResetRequest,
+        ResetResponse,
+        StateResponse,
+        StepRequest,
+        StepResponse,
+    )
+    from .autoscale_environment import AutoscaleEnvironment
+except ImportError:  # pragma: no cover - standalone/module execution fallback
+    from environment import AutoscaleOpenEnv
+    from models import (
+        AutoscaleAction,
+        AutoscaleObservation,
+        HealthResponse,
+        ResetRequest,
+        ResetResponse,
+        StateResponse,
+        StepRequest,
+        StepResponse,
+    )
+    from server.autoscale_environment import AutoscaleEnvironment
 
 try:
     from openenv.core.env_server.http_server import create_app as create_openenv_app
@@ -26,20 +40,37 @@ except Exception:  # pragma: no cover - fallback path when openenv-core is unava
 
 
 def _env_factory() -> AutoscaleEnvironment:
-    trace_path = os.getenv("TRACE_PATH", "traces.jsonl")
+    trace_path = _resolve_trace_path()
     seed = int(os.getenv("ENV_SEED", "7"))
     return AutoscaleEnvironment(trace_path=trace_path, seed=seed)
+
+
+def _resolve_trace_path() -> str:
+    configured = os.getenv("TRACE_PATH")
+    if configured:
+        return configured
+    local_default = Path("traces.jsonl")
+    if local_default.exists():
+        return str(local_default)
+    repo_root_default = Path(__file__).resolve().parents[3] / "traces.jsonl"
+    return str(repo_root_default)
 
 
 def _create_legacy_fastapi_app() -> FastAPI:
     from simulator import AutoscaleSimConfig
 
     app_obj = FastAPI(title="Autoscale OpenEnv")
-    env = AutoscaleOpenEnv(
-        trace_path=Path(os.getenv("TRACE_PATH", "traces.jsonl")),
-        config=AutoscaleSimConfig(),
-        seed=int(os.getenv("ENV_SEED", "7")),
-    )
+    env: AutoscaleOpenEnv | None = None
+
+    def get_env() -> AutoscaleOpenEnv:
+        nonlocal env
+        if env is None:
+            env = AutoscaleOpenEnv(
+                trace_path=Path(_resolve_trace_path()),
+                config=AutoscaleSimConfig(),
+                seed=int(os.getenv("ENV_SEED", "7")),
+            )
+        return env
 
     @app_obj.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -48,14 +79,14 @@ def _create_legacy_fastapi_app() -> FastAPI:
     @app_obj.post("/reset", response_model=ResetResponse)
     def reset(req: ResetRequest) -> ResetResponse:
         try:
-            return env.reset(seed=req.seed, trace_id=req.trace_id, trace_index=req.trace_index)
+            return get_env().reset(seed=req.seed, trace_id=req.trace_id, trace_index=req.trace_index)
         except (ValueError, IndexError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app_obj.post("/step", response_model=StepResponse)
     def step(req: StepRequest) -> StepResponse:
         try:
-            return env.step(req.action.action)
+            return get_env().step(req.action.action)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
@@ -64,7 +95,8 @@ def _create_legacy_fastapi_app() -> FastAPI:
     @app_obj.get("/state", response_model=StateResponse)
     def state() -> StateResponse:
         try:
-            return StateResponse(episode_id=env._episode_id, state=env.state())
+            current_env = get_env()
+            return StateResponse(episode_id=current_env._episode_id, state=current_env.state())
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
