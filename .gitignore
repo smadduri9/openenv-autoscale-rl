@@ -1,0 +1,31 @@
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Generated artifacts and local outputs
+plots/
+rl_rollouts.jsonl
+sft_data/
+sft_data_balanced/
+sft_model/
+sft_model_balanced/
+rl_model/
+
+# OS/editor files
+.DS_Store
+.idea/
+.vscode/
+
+.cursor/plans/
