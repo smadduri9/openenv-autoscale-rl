@@ -39,6 +39,12 @@ except Exception:  # pragma: no cover - fallback path when openenv-core is unava
     create_openenv_app = None
 
 
+def _should_use_openenv_core_app() -> bool:
+    """Gate OpenEnv core HTTP app until session semantics are explicitly configured."""
+    flag = os.getenv("USE_OPENENV_CORE_APP", "0").strip().lower()
+    return flag in {"1", "true", "yes", "on"}
+
+
 def _env_factory() -> AutoscaleEnvironment:
     trace_path = _resolve_trace_path()
     seed = int(os.getenv("ENV_SEED", "7"))
@@ -108,7 +114,7 @@ def build_app(trace_path: str | None = None, seed: int | None = None) -> FastAPI
         os.environ["TRACE_PATH"] = trace_path
     if seed is not None:
         os.environ["ENV_SEED"] = str(seed)
-    if create_openenv_app is not None:
+    if create_openenv_app is not None and _should_use_openenv_core_app():
         return create_openenv_app(
             _env_factory,
             AutoscaleAction,

@@ -136,6 +136,8 @@ def maybe_launch_server(args: argparse.Namespace) -> subprocess.Popen[str] | Non
         server_env["ENV_SEED"] = str(args.prompt_seed)
         server_env["HOST"] = args.server_host
         server_env["PORT"] = str(args.server_port)
+        # Keep reset/step semantics stable for HTTP reward flow in packaged mode.
+        server_env["USE_OPENENV_CORE_APP"] = server_env.get("USE_OPENENV_CORE_APP", "0")
         if not env_package_dir.exists():
             raise RuntimeError(
                 f"Packaged environment directory not found: {env_package_dir}. "
@@ -190,6 +192,19 @@ def wait_for_health(client: OpenEnvClient, timeout_s: float) -> None:
     raise RuntimeError(
         f"Environment preflight failed: {client.base_url}/health not reachable/healthy within {timeout_s:.1f}s.{detail}"
     )
+
+
+def sanity_check_reset_step(client: OpenEnvClient, seed: int, trace_index: int | None) -> float:
+    """Verify reward flow uses same initialized episode across reset -> step."""
+    reset_resp = client.reset(seed=seed, trace_index=trace_index)
+    step_resp = client.step("hold")
+    reward = float(step_resp.reward)
+    print(
+        "[sanity] reset->step ok "
+        f"episode_id={reset_resp.episode_id} "
+        f"trace_id={reset_resp.trace_id} reward={reward:.4f}"
+    )
+    return reward
 
 
 def build_seed_prompt_dataset(
@@ -329,6 +344,7 @@ def main() -> None:
     server_proc = maybe_launch_server(args)
     client = OpenEnvClient(args.base_url)
     wait_for_health(client, timeout_s=args.server_wait_seconds)
+    sanity_check_reset_step(client, seed=args.prompt_seed, trace_index=args.trace_index)
 
     dataset = build_seed_prompt_dataset(
         client=client,
