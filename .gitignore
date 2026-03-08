@@ -29,3 +29,6 @@ rl_model/
 .vscode/
 
 .cursor/plans/
+
+traces.jsonl
+expert_trajectories.jsonl
