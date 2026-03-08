@@ -138,6 +138,8 @@ def maybe_launch_server(args: argparse.Namespace) -> subprocess.Popen[str] | Non
         server_env["ENV_SEED"] = str(args.prompt_seed)
         server_env["HOST"] = args.server_host
         server_env["PORT"] = str(args.server_port)
+        server_env["LOG_LEVEL"] = server_env.get("LOG_LEVEL", "warning")
+        server_env["ACCESS_LOG"] = server_env.get("ACCESS_LOG", "0")
         # Keep reset/step semantics stable for HTTP reward flow in packaged mode.
         server_env["USE_OPENENV_CORE_APP"] = server_env.get("USE_OPENENV_CORE_APP", "0")
         if not env_package_dir.exists():
@@ -174,6 +176,9 @@ def maybe_launch_server(args: argparse.Namespace) -> subprocess.Popen[str] | Non
         str(args.server_port),
         "--seed",
         str(args.prompt_seed),
+        "--log-level",
+        "warning",
+        "--no-access-log",
     ]
     return subprocess.Popen(cmd)
 

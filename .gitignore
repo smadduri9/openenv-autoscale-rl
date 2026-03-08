@@ -32,3 +32,8 @@ rl_model/
 
 traces.jsonl
 expert_trajectories.jsonl
+
+# Demo UI
+demo-ui/node_modules/
+demo-ui/dist/
+demo/replays.json

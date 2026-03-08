@@ -1,0 +1,77 @@
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #0f172a;
+  color: #e2e8f0;
+}
+
+.container {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+h1 {
+  margin: 0 0 16px;
+}
+
+.controls {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.controls label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+button,
+select,
+input[type="range"] {
+  background: #1e293b;
+  border: 1px solid #334155;
+  color: #e2e8f0;
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+.split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.panel {
+  border: 1px solid #334155;
+  border-radius: 10px;
+  background: #111827;
+  padding: 12px;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 10px;
+  font-size: 13px;
+}
+
+.metric-grid span {
+  color: #93c5fd;
+  margin-right: 6px;
+}
+
+.chart-row {
+  margin-top: 14px;
+}
+
+.chart-card {
+  border: 1px solid #334155;
+  border-radius: 10px;
+  background: #111827;
+  padding: 12px;
+  margin-bottom: 12px;
+}
