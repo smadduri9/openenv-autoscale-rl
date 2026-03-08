@@ -15,6 +15,7 @@ Outputs:
 
 import argparse
 import json
+import os
 import socket
 import subprocess
 import time
@@ -40,7 +41,7 @@ def _configure_nonfatal_warning_filters() -> None:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Colab-friendly Unsloth + TRL GRPO entrypoint for autoscaling.")
     p.add_argument("--base-url", type=str, default="http://127.0.0.1:8000")
-    p.add_argument("--init-model", type=str, default="sft_model_balanced")
+    p.add_argument("--init-model", type=str, default="unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit")
     p.add_argument("--output-dir", type=Path, default=Path("rl_model"))
     p.add_argument("--num-prompts", type=int, default=64)
     p.add_argument("--prompt-seed", type=int, default=7)
@@ -50,6 +51,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--server-host", type=str, default="127.0.0.1")
     p.add_argument("--server-port", type=int, default=8000)
     p.add_argument("--server-wait-seconds", type=float, default=20.0)
+    p.add_argument(
+        "--server-launch-mode",
+        choices=["auto", "packaged", "legacy"],
+        default="auto",
+        help="Server launch path for --auto-launch-server. 'auto' prefers packaged env.",
+    )
+    p.add_argument(
+        "--env-package-dir",
+        type=Path,
+        default=Path("envs/autoscale_env"),
+        help="Packaged OpenEnv directory used when launch mode is packaged/auto.",
+    )
     p.add_argument("--lora-r", type=int, default=16)
     p.add_argument("--lora-alpha", type=int, default=16)
     p.add_argument("--max-steps", type=int, default=200)
@@ -108,11 +121,49 @@ def maybe_launch_server(args: argparse.Namespace) -> subprocess.Popen[str] | Non
         )
         return None
     ensure_trace_file(args.trace_path)
+    trace_path_abs = str(args.trace_path.resolve())
+    env_package_dir = args.env_package_dir.resolve()
+    launch_mode = args.server_launch_mode
+    use_packaged = False
+    if launch_mode == "packaged":
+        use_packaged = True
+    elif launch_mode == "auto":
+        use_packaged = env_package_dir.exists()
+
+    if use_packaged:
+        server_env = dict(os.environ)
+        server_env["TRACE_PATH"] = trace_path_abs
+        server_env["ENV_SEED"] = str(args.prompt_seed)
+        server_env["HOST"] = args.server_host
+        server_env["PORT"] = str(args.server_port)
+        if not env_package_dir.exists():
+            raise RuntimeError(
+                f"Packaged environment directory not found: {env_package_dir}. "
+                "Use --server-launch-mode legacy or fix --env-package-dir."
+            )
+        if (env_package_dir / "uv.lock").exists():
+            print(f"[server-launch] Launching packaged env with uv_run from: {env_package_dir}")
+            return subprocess.Popen(
+                ["python3", "-m", "uv", "run", "server"],
+                cwd=str(env_package_dir),
+                env=server_env,
+            )
+        print(
+            f"[server-launch] Launching packaged env with python_module from: {env_package_dir} "
+            "(uv.lock missing, using fallback mode)."
+        )
+        return subprocess.Popen(
+            ["python3", "-m", "server.app"],
+            cwd=str(env_package_dir),
+            env=server_env,
+        )
+
+    print("[server-launch] Launching legacy root server.py (compatibility mode).")
     cmd = [
         "python3",
         "server.py",
         "--trace-path",
-        str(args.trace_path),
+        trace_path_abs,
         "--host",
         args.server_host,
         "--port",
@@ -189,7 +240,31 @@ def make_env_reward_func(base_url: str):
     return reward_func
 
 
-def load_unsloth_model_and_tokenizer(args: argparse.Namespace):
+def resolve_init_model(init_model: str) -> str:
+    default_hf_model = "unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit"
+    candidate = Path(init_model).expanduser()
+    local_path_hint = init_model.startswith(("./", "../", "/", "~"))
+
+    if candidate.exists() and candidate.is_dir():
+        print(f"[model-init] Using local model directory: {candidate}")
+        return str(candidate)
+    if local_path_hint:
+        raise RuntimeError(
+            f"--init-model points to a local path but directory does not exist: {init_model}. "
+            f"Use a valid local folder or an HF model id like {default_hf_model}."
+        )
+    if "/" in init_model:
+        print(f"[model-init] Using Hugging Face model id: {init_model}")
+        return init_model
+    if init_model != default_hf_model:
+        print(
+            f"[model-init] Local model directory not found for '{init_model}'. "
+            f"Falling back to default HF model id: {default_hf_model}"
+        )
+    return default_hf_model
+
+
+def load_unsloth_model_and_tokenizer(args: argparse.Namespace, resolved_model: str):
     try:
         from unsloth import FastLanguageModel, PatchFastRL
     except Exception as exc:
@@ -199,7 +274,7 @@ def load_unsloth_model_and_tokenizer(args: argparse.Namespace):
 
     PatchFastRL("GRPO", FastLanguageModel)
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=args.init_model,
+        model_name=resolved_model,
         max_seq_length=args.max_prompt_length,
         load_in_4bit=True,
     )
@@ -211,7 +286,7 @@ def load_unsloth_model_and_tokenizer(args: argparse.Namespace):
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
         use_gradient_checkpointing="unsloth",
     )
-    return model, tokenizer
+    return model, tokenizer, resolved_model
 
 
 def load_grpo_classes():
@@ -233,15 +308,19 @@ def main() -> None:
     _configure_nonfatal_warning_filters()
     args = parse_args()
     cuda_available, gpu_name = ensure_cuda_or_die()
+    resolved_init_model = resolve_init_model(args.init_model)
     print(
         "[startup] cuda_available={cuda_available} gpu_name={gpu_name} "
-        "base_url={base_url} server_port={server_port} init_model={init_model} "
+        "base_url={base_url} server_port={server_port} launch_mode={launch_mode} "
+        "env_package_dir={env_package_dir} init_model={init_model} "
         "output_dir={output_dir} num_prompts={num_prompts} max_steps={max_steps}".format(
             cuda_available=cuda_available,
             gpu_name=gpu_name,
             base_url=args.base_url,
             server_port=args.server_port,
-            init_model=args.init_model,
+            launch_mode=args.server_launch_mode,
+            env_package_dir=args.env_package_dir,
+            init_model=resolved_init_model,
             output_dir=args.output_dir,
             num_prompts=args.num_prompts,
             max_steps=args.max_steps,
@@ -257,7 +336,7 @@ def main() -> None:
         prompt_seed=args.prompt_seed,
         trace_index=args.trace_index,
     )
-    model, tokenizer = load_unsloth_model_and_tokenizer(args)
+    model, tokenizer, _ = load_unsloth_model_and_tokenizer(args, resolved_init_model)
     GRPOConfig, GRPOTrainer = load_grpo_classes()
 
     grpo_config = GRPOConfig(
@@ -289,7 +368,7 @@ def main() -> None:
             "num_prompts": len(dataset),
             "max_steps": args.max_steps,
             "base_url": args.base_url,
-            "init_model": args.init_model,
+            "init_model": resolved_init_model,
             "normalization_example": normalize_action_output("scale_up_2\nextra"),
         }
         summary_path = args.output_dir / "grpo_run_summary.json"
