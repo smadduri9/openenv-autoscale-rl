@@ -9,6 +9,9 @@ ACTIONS: Sequence[str] = (
     "scale_up_1",
     "scale_up_2",
     "scale_up_4",
+    "enable_rate_limit",
+    "disable_rate_limit",
+    "rollback_release",
 )
 
 SYSTEM_LINE = (
@@ -32,6 +35,10 @@ def format_observation_prompt(observation: Mapping[str, object]) -> str:
         f"- p95_latency_ms: {float(observation.get('p95_latency_ms', 0.0)):.3f}",
         f"- error_rate: {float(observation.get('error_rate', 0.0)):.6f}",
         f"- previous_action: {str(observation.get('previous_action', 'hold'))}",
+        f"- rate_limit_enabled: {bool(observation.get('rate_limit_enabled', False))}",
+        f"- bad_deploy_active: {bool(observation.get('bad_deploy_active', False))}",
+        f"- dependency_slowdown_active: {bool(observation.get('dependency_slowdown_active', False))}",
+        f"- rollback_pending_steps: {int(observation.get('rollback_pending_steps', 0))}",
         "",
         "Valid actions:",
         "- scale_down_2",
@@ -40,6 +47,9 @@ def format_observation_prompt(observation: Mapping[str, object]) -> str:
         "- scale_up_1",
         "- scale_up_2",
         "- scale_up_4",
+        "- enable_rate_limit",
+        "- disable_rate_limit",
+        "- rollback_release",
         "",
         "Return only the action.",
     ]

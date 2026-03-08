@@ -74,6 +74,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rl-model-path", type=str, default="rl_model")
     parser.add_argument("--skip-sft", action="store_true")
     parser.add_argument("--skip-rl", action="store_true")
+    parser.add_argument("--output-json", type=Path, default=Path("policy_eval_summary.json"))
     return parser.parse_args()
 
 
@@ -111,6 +112,7 @@ def evaluate_heuristic(trace: TraceRecord) -> Dict[str, float | int]:
     sim = AutoscaleSimulator(
         config=AutoscaleSimConfig(episode_length=len(trace["rps"]), history_length=len(trace["rps"])),
         trace=trace["rps"],
+        trace_family=trace["family"],
         seed=None,
     )
     policy = HeuristicHPAPolicy()
@@ -127,6 +129,7 @@ def evaluate_model(trace: TraceRecord, model: TextActionModel) -> Dict[str, floa
     sim = AutoscaleSimulator(
         config=AutoscaleSimConfig(episode_length=len(trace["rps"]), history_length=len(trace["rps"])),
         trace=trace["rps"],
+        trace_family=trace["family"],
         seed=None,
     )
     obs = sim.reset()
@@ -157,6 +160,7 @@ def main() -> None:
         heuristic_metrics.append(evaluate_heuristic(trace))
     heuristic_agg = aggregate_metrics(heuristic_metrics)
     print_summary("Heuristic baseline", heuristic_agg)
+    summary: Dict[str, Mapping[str, float]] = {"heuristic": heuristic_agg}
 
     if not args.skip_sft:
         sft_model = try_load_model(args.sft_model_path, "SFT")
@@ -164,7 +168,9 @@ def main() -> None:
             sft_metrics: List[Dict[str, float | int]] = []
             for trace in traces:
                 sft_metrics.append(evaluate_model(trace, sft_model))
-            print_summary("SFT policy", aggregate_metrics(sft_metrics))
+            sft_agg = aggregate_metrics(sft_metrics)
+            print_summary("SFT policy", sft_agg)
+            summary["sft"] = sft_agg
 
     if not args.skip_rl:
         rl_model = try_load_model(args.rl_model_path, "RL")
@@ -172,7 +178,14 @@ def main() -> None:
             rl_metrics: List[Dict[str, float | int]] = []
             for trace in traces:
                 rl_metrics.append(evaluate_model(trace, rl_model))
-            print_summary("RL policy", aggregate_metrics(rl_metrics))
+            rl_agg = aggregate_metrics(rl_metrics)
+            print_summary("RL policy", rl_agg)
+            summary["rl"] = rl_agg
+
+    args.output_json.parent.mkdir(parents=True, exist_ok=True)
+    with args.output_json.open("w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+    print(f"\nSaved summary JSON to {args.output_json}")
 
 
 if __name__ == "__main__":

@@ -65,13 +65,15 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--lora-r", type=int, default=16)
     p.add_argument("--lora-alpha", type=int, default=16)
-    p.add_argument("--max-steps", type=int, default=200)
+    p.add_argument("--max-steps", type=int, default=100)
     p.add_argument("--learning-rate", type=float, default=5e-6)
     p.add_argument("--batch-size", type=int, default=1)
     p.add_argument("--gradient-accumulation-steps", type=int, default=4)
     p.add_argument("--num-generations", type=int, default=4)
     p.add_argument("--max-prompt-length", type=int, default=512)
     p.add_argument("--max-completion-length", type=int, default=8)
+    p.add_argument("--reward-horizon", type=int, default=20)
+    p.add_argument("--reward-gamma", type=float, default=0.97)
     p.add_argument("--seed", type=int, default=7)
     return p.parse_args()
 
@@ -225,9 +227,11 @@ def build_seed_prompt_dataset(
     return Dataset.from_dict({"prompt": prompts, "seed": seeds, "trace_index": trace_indices})
 
 
-def make_env_reward_func(base_url: str):
+def make_env_reward_func(base_url: str, reward_horizon: int, reward_gamma: float):
     client = OpenEnvClient(base_url)
     legal_actions = set(ACTIONS)
+    horizon = max(1, int(reward_horizon))
+    gamma = float(reward_gamma)
 
     def reward_func(prompts: Sequence[Any], completions: Sequence[Any], **kwargs: Any) -> List[float]:
         _ = prompts
@@ -245,8 +249,17 @@ def make_env_reward_func(base_url: str):
             else:
                 client.reset(seed=step_seed)
 
-            step_resp = client.step(chosen)
-            reward = float(step_resp.reward)
+            reward = 0.0
+            discount = 1.0
+            done = False
+            for rollout_step in range(horizon):
+                action = chosen if rollout_step == 0 else "hold"
+                step_resp = client.step(action)
+                reward += discount * float(step_resp.reward)
+                done = bool(step_resp.done)
+                if done:
+                    break
+                discount *= gamma
             if normalized not in legal_actions or not is_valid:
                 reward -= 0.05
             rewards.append(reward)
@@ -327,7 +340,8 @@ def main() -> None:
     print(
         "[startup] cuda_available={cuda_available} gpu_name={gpu_name} "
         "base_url={base_url} server_port={server_port} launch_mode={launch_mode} "
-        "env_package_dir={env_package_dir} init_model={init_model} "
+        "env_package_dir={env_package_dir} init_model={init_model} reward_horizon={reward_horizon} "
+        "reward_gamma={reward_gamma} "
         "output_dir={output_dir} num_prompts={num_prompts} max_steps={max_steps}".format(
             cuda_available=cuda_available,
             gpu_name=gpu_name,
@@ -336,6 +350,8 @@ def main() -> None:
             launch_mode=args.server_launch_mode,
             env_package_dir=args.env_package_dir,
             init_model=resolved_init_model,
+            reward_horizon=args.reward_horizon,
+            reward_gamma=args.reward_gamma,
             output_dir=args.output_dir,
             num_prompts=args.num_prompts,
             max_steps=args.max_steps,
@@ -371,7 +387,11 @@ def main() -> None:
     try:
         trainer = GRPOTrainer(
             model=model,
-            reward_funcs=make_env_reward_func(args.base_url),
+            reward_funcs=make_env_reward_func(
+                args.base_url,
+                reward_horizon=args.reward_horizon,
+                reward_gamma=args.reward_gamma,
+            ),
             args=grpo_config,
             train_dataset=dataset,
             processing_class=tokenizer,
@@ -385,6 +405,8 @@ def main() -> None:
             "max_steps": args.max_steps,
             "base_url": args.base_url,
             "init_model": resolved_init_model,
+            "reward_horizon": args.reward_horizon,
+            "reward_gamma": args.reward_gamma,
             "normalization_example": normalize_action_output("scale_up_2\nextra"),
         }
         summary_path = args.output_dir / "grpo_run_summary.json"

@@ -28,6 +28,13 @@ class AutoscaleSimConfig:
     w_cost: float = 0.05
     w_flap: float = 0.10
     w_queue: float = 0.001
+    rate_limit_drop_fraction: float = 0.25
+    bad_deploy_latency_multiplier: float = 1.8
+    bad_deploy_error_boost: float = 0.08
+    bad_deploy_capacity_multiplier: float = 0.7
+    rollback_recovery_delay_steps: int = 3
+    dependency_latency_add_ms: float = 120.0
+    dependency_error_boost: float = 0.03
 
 
 class AutoscaleSimulator:
@@ -38,16 +45,22 @@ class AutoscaleSimulator:
         "scale_up_1": 1,
         "scale_up_2": 2,
         "scale_up_4": 4,
+        "enable_rate_limit": 0,
+        "disable_rate_limit": 0,
+        "rollback_release": 0,
     }
+    CONTROL_ACTIONS = {"enable_rate_limit", "disable_rate_limit", "rollback_release"}
 
     def __init__(
         self,
         config: AutoscaleSimConfig,
         trace: Sequence[float],
+        trace_family: str | None = None,
         seed: int | None = None,
     ) -> None:
         self.config = config
         self.trace = [max(0.0, float(v)) for v in trace]
+        self.trace_family = trace_family or "generic"
         self.seed = seed
         self._rng = Random(seed)
         self._validate_inputs()
@@ -66,6 +79,12 @@ class AutoscaleSimulator:
         self.total_scale_actions = 0
         self.requests_served = 0.0
         self.requests_dropped = 0.0
+        self.rate_limited_requests = 0.0
+        self.total_control_actions = 0
+        self.rate_limit_enabled = False
+        self.bad_deploy_active = False
+        self.dependency_slowdown_active = False
+        self.rollback_pending_steps = 0
         self.done = False
         self._step_rewards: List[float] = []
         self._history: Dict[str, Deque[float]] = {}
@@ -120,6 +139,12 @@ class AutoscaleSimulator:
         self.total_scale_actions = 0
         self.requests_served = 0.0
         self.requests_dropped = 0.0
+        self.rate_limited_requests = 0.0
+        self.total_control_actions = 0
+        self.rate_limit_enabled = False
+        self.bad_deploy_active = self.trace_family == "bad_deploy"
+        self.dependency_slowdown_active = self.trace_family == "dependency_slowdown"
+        self.rollback_pending_steps = 0
         self.done = False
         self._step_rewards = []
         self._init_history()
@@ -135,13 +160,22 @@ class AutoscaleSimulator:
             raise ValueError(f"Invalid action: {action!r}. Allowed actions: {allowed}")
 
         requested_delta = self.ACTION_TO_DELTA[action]
+        self._apply_control_action(action)
         applied_delta = self._apply_scaling(requested_delta)
+        self._advance_incident_timers()
         self._advance_pending()
 
         self.incoming_rps = self.trace[self.timestep]
         capacity = self.ready_pods * self.config.pod_capacity_rps
+        if self.bad_deploy_active:
+            capacity *= self.config.bad_deploy_capacity_multiplier
         queue_prev = self.queue_depth
-        total_demand = self.incoming_rps + queue_prev
+        accepted_incoming = self.incoming_rps
+        rate_limited = 0.0
+        if self.rate_limit_enabled:
+            accepted_incoming = self.incoming_rps * (1.0 - self.config.rate_limit_drop_fraction)
+            rate_limited = self.incoming_rps - accepted_incoming
+        total_demand = accepted_incoming + queue_prev
         served = min(total_demand, capacity)
         self.queue_depth = max(0.0, total_demand - served)
         if self.config.max_queue_depth > 0:
@@ -158,15 +192,25 @@ class AutoscaleSimulator:
         self.p95_latency_ms = self.config.base_latency_ms + (
             self.config.latency_per_queue_ratio_ms * queue_ratio
         )
+        if self.bad_deploy_active:
+            self.p95_latency_ms *= self.config.bad_deploy_latency_multiplier
+        if self.dependency_slowdown_active:
+            self.p95_latency_ms += self.config.dependency_latency_add_ms * (0.5 + 0.5 * self.cpu_utilization)
 
         over_threshold = max(0.0, self.queue_depth - self.config.queue_error_threshold)
         self.error_rate = min(
             self.config.max_error_rate,
             over_threshold / max(self.config.queue_error_saturation, 1e-6),
         )
+        if self.bad_deploy_active:
+            self.error_rate = min(self.config.max_error_rate, self.error_rate + self.config.bad_deploy_error_boost)
+        if self.dependency_slowdown_active:
+            dep_boost = self.config.dependency_error_boost * (0.5 + 0.5 * self.cpu_utilization)
+            self.error_rate = min(self.config.max_error_rate, self.error_rate + dep_boost)
 
         self.requests_served += served * (1.0 - self.error_rate)
-        self.requests_dropped += self.incoming_rps * self.error_rate
+        self.requests_dropped += self.incoming_rps * self.error_rate + rate_limited
+        self.rate_limited_requests += rate_limited
         self.total_cost_pod_steps += float(self.ready_pods)
         if applied_delta != 0:
             self.total_scale_actions += 1
@@ -191,12 +235,36 @@ class AutoscaleSimulator:
         info: Dict[str, float | int] = {
             "capacity_rps": capacity,
             "served": served,
+            "rate_limited": rate_limited,
             "slo_violation": slo_violation,
             "action_delta_applied": applied_delta,
             "action_delta_requested": requested_delta,
             "queue_depth_prev": queue_prev,
+            "rate_limit_enabled": int(self.rate_limit_enabled),
+            "bad_deploy_active": int(self.bad_deploy_active),
+            "dependency_slowdown_active": int(self.dependency_slowdown_active),
+            "rollback_pending_steps": self.rollback_pending_steps,
         }
         return obs, reward, self.done, info
+
+    def _apply_control_action(self, action: str) -> None:
+        if action not in self.CONTROL_ACTIONS:
+            return
+        self.total_control_actions += 1
+        if action == "enable_rate_limit":
+            self.rate_limit_enabled = True
+            return
+        if action == "disable_rate_limit":
+            self.rate_limit_enabled = False
+            return
+        if action == "rollback_release" and self.bad_deploy_active and self.rollback_pending_steps == 0:
+            self.rollback_pending_steps = max(1, self.config.rollback_recovery_delay_steps)
+
+    def _advance_incident_timers(self) -> None:
+        if self.rollback_pending_steps > 0:
+            self.rollback_pending_steps -= 1
+            if self.rollback_pending_steps == 0:
+                self.bad_deploy_active = False
 
     def _apply_scaling(self, requested_delta: int) -> int:
         if requested_delta < 0:
@@ -247,6 +315,10 @@ class AutoscaleSimulator:
             "p95_latency_ms": float(self.p95_latency_ms),
             "error_rate": float(self.error_rate),
             "previous_action": self.previous_action,
+            "rate_limit_enabled": bool(self.rate_limit_enabled),
+            "bad_deploy_active": bool(self.bad_deploy_active),
+            "dependency_slowdown_active": bool(self.dependency_slowdown_active),
+            "rollback_pending_steps": self.rollback_pending_steps,
         }
         if self.config.history_length > 0:
             obs["history"] = {k: list(v) for k, v in self._history.items()}
@@ -266,8 +338,10 @@ class AutoscaleSimulator:
             "mean_latency_ms": self._safe_mean(self._history.get("p95_latency_ms")),
             "total_cost_pod_steps": self.total_cost_pod_steps,
             "total_scale_actions": self.total_scale_actions,
+            "total_control_actions": self.total_control_actions,
             "requests_served": self.requests_served,
             "requests_dropped": self.requests_dropped,
+            "rate_limited_requests": self.rate_limited_requests,
             "drop_fraction": 0.0
             if (self.requests_served + self.requests_dropped) <= 0
             else self.requests_dropped / (self.requests_served + self.requests_dropped),

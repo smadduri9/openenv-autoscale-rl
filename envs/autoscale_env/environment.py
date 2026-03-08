@@ -103,6 +103,10 @@ class AutoscaleOpenEnv:
             p95_latency_ms=float(obs["p95_latency_ms"]),
             error_rate=float(obs["error_rate"]),
             previous_action=str(obs["previous_action"]),
+            rate_limit_enabled=bool(obs.get("rate_limit_enabled", False)),
+            bad_deploy_active=bool(obs.get("bad_deploy_active", False)),
+            dependency_slowdown_active=bool(obs.get("dependency_slowdown_active", False)),
+            rollback_pending_steps=int(obs.get("rollback_pending_steps", 0)),
             reward=float(reward),
             done=bool(done),
             history=history,
@@ -112,7 +116,12 @@ class AutoscaleOpenEnv:
         self._trace = self._pick_trace(trace_id=trace_id, trace_index=trace_index)
         self._episode_seed = int(seed if seed is not None else self._rng.randint(0, 2**31 - 1))
         cfg = AutoscaleSimConfig(**{**self.config.__dict__, "episode_length": len(self._trace["rps"])})
-        self._sim = AutoscaleSimulator(cfg, trace=self._trace["rps"], seed=self._episode_seed)
+        self._sim = AutoscaleSimulator(
+            cfg,
+            trace=self._trace["rps"],
+            trace_family=self._trace["family"],
+            seed=self._episode_seed,
+        )
         obs = self._sim.reset()
         self._episode_id = str(uuid4())
         return ResetResponse(

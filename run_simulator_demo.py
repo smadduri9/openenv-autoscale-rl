@@ -57,7 +57,12 @@ def main() -> None:
     args = parse_args()
     row = load_trace(args.trace_path, args.trace_index)
     trace = list(row["rps"])
-    sim = AutoscaleSimulator(AutoscaleSimConfig(episode_length=len(trace)), trace=trace, seed=args.seed)
+    sim = AutoscaleSimulator(
+        AutoscaleSimConfig(episode_length=len(trace)),
+        trace=trace,
+        trace_family=str(row.get("family", "generic")),
+        seed=args.seed,
+    )
     rng = Random(args.seed)
     obs = sim.reset()
 

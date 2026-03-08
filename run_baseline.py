@@ -81,6 +81,7 @@ def evaluate_trace(
     sim = AutoscaleSimulator(
         AutoscaleSimConfig(episode_length=len(trace["rps"]), history_length=len(trace["rps"])),
         trace["rps"],
+        trace_family=trace["family"],
     )
     obs = sim.reset()
     if policy is not None:

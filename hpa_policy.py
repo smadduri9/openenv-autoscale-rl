@@ -18,6 +18,10 @@ class HeuristicHPAPolicyConfig:
     deep_idle_patience: int = 6
     cooldown_steps: int = 2
     allow_break_cooldown_on_distress: bool = True
+    rollback_error_threshold: float = 0.08
+    rollback_latency_threshold: float = 320.0
+    enable_rate_limit_queue_threshold: float = 160.0
+    disable_rate_limit_queue_threshold: float = 40.0
 
 
 class HeuristicHPAPolicy:
@@ -28,6 +32,9 @@ class HeuristicHPAPolicy:
         "scale_up_1",
         "scale_up_2",
         "scale_up_4",
+        "enable_rate_limit",
+        "disable_rate_limit",
+        "rollback_release",
     }
 
     def __init__(self, config: HeuristicHPAPolicyConfig | None = None) -> None:
@@ -44,6 +51,10 @@ class HeuristicHPAPolicy:
         queue = float(observation.get("queue_depth", 0.0))
         latency = float(observation.get("p95_latency_ms", 0.0))
         error_rate = float(observation.get("error_rate", 0.0))
+        rate_limit_enabled = bool(observation.get("rate_limit_enabled", False))
+        bad_deploy_active = bool(observation.get("bad_deploy_active", False))
+        rollback_pending_steps = int(observation.get("rollback_pending_steps", 0))
+        dependency_slowdown_active = bool(observation.get("dependency_slowdown_active", False))
 
         severe = (
             queue >= self.config.queue_aggressive_scale_up_threshold
@@ -62,6 +73,29 @@ class HeuristicHPAPolicy:
             and error_rate <= 0.001
         )
         self._idle_streak = self._idle_streak + 1 if idle_like else 0
+
+        if (
+            bad_deploy_active
+            and rollback_pending_steps <= 0
+            and (
+                error_rate >= self.config.rollback_error_threshold
+                or latency >= self.config.rollback_latency_threshold
+            )
+        ):
+            return self._finalize_action("rollback_release")
+
+        if (
+            dependency_slowdown_active
+            and not rate_limit_enabled
+            and (queue >= self.config.enable_rate_limit_queue_threshold or latency >= self.config.latency_scale_up_threshold)
+        ):
+            return self._finalize_action("enable_rate_limit")
+        if (
+            rate_limit_enabled
+            and queue <= self.config.disable_rate_limit_queue_threshold
+            and error_rate <= 0.01
+        ):
+            return self._finalize_action("disable_rate_limit")
 
         if self._cooldown_remaining > 0:
             self._cooldown_remaining -= 1

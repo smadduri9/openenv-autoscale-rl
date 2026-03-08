@@ -73,12 +73,50 @@ def gen_drifting_noisy(length: int, rng: Random) -> List[float]:
     return _clamp_non_negative(out)
 
 
+def gen_traffic_spike(length: int, rng: Random) -> List[float]:
+    baseline = rng.uniform(35.0, 90.0)
+    out: List[float] = []
+    spike_starts = sorted({rng.randint(5, max(6, length - 10)) for _ in range(2)})
+    spike_len = max(4, length // 10)
+    for t in range(length):
+        level = baseline
+        for start in spike_starts:
+            if start <= t < min(length, start + spike_len):
+                level *= rng.uniform(2.5, 4.5)
+        out.append(level + rng.uniform(-0.08 * baseline, 0.08 * baseline))
+    return _clamp_non_negative(out)
+
+
+def gen_bad_deploy(length: int, rng: Random) -> List[float]:
+    baseline = rng.uniform(60.0, 140.0)
+    drift = rng.uniform(-0.1, 0.4)
+    out: List[float] = []
+    value = baseline
+    for _ in range(length):
+        value += drift + rng.uniform(-0.04 * baseline, 0.04 * baseline)
+        out.append(value)
+    return _clamp_non_negative(out)
+
+
+def gen_dependency_slowdown(length: int, rng: Random) -> List[float]:
+    baseline = rng.uniform(45.0, 120.0)
+    out: List[float] = []
+    for t in range(length):
+        pulse = 1.0 + 0.3 * math.sin(2.0 * math.pi * t / max(12.0, length / 4.0))
+        level = baseline * pulse
+        out.append(level + rng.uniform(-0.05 * baseline, 0.05 * baseline))
+    return _clamp_non_negative(out)
+
+
 FAMILIES: Dict[str, TraceGenerator] = {
     "steady": gen_steady,
     "sustained_spike": gen_sustained_spike,
     "transient_spike": gen_transient_spike,
     "cyclical": gen_cyclical,
     "drifting_noisy": gen_drifting_noisy,
+    "traffic_spike": gen_traffic_spike,
+    "bad_deploy": gen_bad_deploy,
+    "dependency_slowdown": gen_dependency_slowdown,
 }
 
 

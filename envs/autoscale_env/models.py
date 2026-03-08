@@ -22,7 +22,17 @@ except Exception:  # pragma: no cover - allows local fallback without openenv-co
         step_count: int = 0
 
 
-AllowedAction = Literal["scale_down_2", "scale_down_1", "hold", "scale_up_1", "scale_up_2", "scale_up_4"]
+AllowedAction = Literal[
+    "scale_down_2",
+    "scale_down_1",
+    "hold",
+    "scale_up_1",
+    "scale_up_2",
+    "scale_up_4",
+    "enable_rate_limit",
+    "disable_rate_limit",
+    "rollback_release",
+]
 
 
 class AutoscaleAction(OpenEnvAction):
@@ -47,6 +57,10 @@ class AutoscaleObservation(OpenEnvObservation):
     p95_latency_ms: float
     error_rate: float
     previous_action: str
+    rate_limit_enabled: bool = False
+    bad_deploy_active: bool = False
+    dependency_slowdown_active: bool = False
+    rollback_pending_steps: int = 0
     reward: float = 0.0
     done: bool = False
     history: Optional[ObservationHistory] = None
