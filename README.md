@@ -1,67 +1,145 @@
-# Autoscaling Simulator + OpenEnv-Style Wrapper
+# OpenEnv Autoscaling Environment
 
-Hackathon project for learning autoscaling policies with a deterministic single-service simulator, an OpenEnv-style HTTP wrapper, and SFT/RL scaffolding.
+## Project Overview
 
-## What This Repo Includes
+This project implements a Kubernetes-like autoscaling simulator and packages it as a formal OpenEnv environment. It includes:
 
-- Simulator core for autoscaling dynamics (`reset`, `step`, reward, metrics)
-- Synthetic workload trace generation
-- Heuristic baseline policy and evaluation runner
-- OpenEnv-style HTTP environment (`/health`, `/reset`, `/step`, `/state`)
-- SFT warm-start dataset/training/eval scripts
-- RL rollout + minimal training scaffolding
-- Plotting utilities for heuristic vs SFT comparison
+- A deterministic simulator for one autoscaled service under changing load
+- A formal OpenEnv package at `envs/autoscale_env`
+- Baseline heuristic policy + evaluation scripts
+- SFT and Unsloth+GRPO training scaffolding
+- Colab notebook and script for packaged-environment RL training
 
-## Project Structure
+## Why This Environment Is Interesting
 
-- `simulator.py` - core simulator and reward dynamics
-- `generate_traces.py` - synthetic trace generator (JSONL)
-- `hpa_policy.py`, `run_baseline.py` - heuristic baseline + metrics + trajectory export
-- `models.py`, `environment.py`, `server.py`, `client.py` - OpenEnv-style wrapper and API
-- `smoke_test_openenv.py` - end-to-end API smoke test
-- `prompts.py`, `build_sft_dataset.py`, `train_sft.py`, `eval_sft.py` - SFT pipeline
-- `rollout.py`, `train_rl.py`, `eval_policy.py`, `colab_train_rl.py` - RL/eval pipeline
-- `plot_results.py` - PNG plot generation in `plots/`
+- **Delayed scaling dynamics**: scale-up actions have startup delays, so action quality depends on anticipation.
+- **Real tradeoffs**: reward balances latency SLO violations, queue buildup, error rate, cost, and scaling flaps.
+- **Policy-learning friendly**: deterministic traces and explicit action space make it suitable for imitation + RL experiments.
+- **Hackathon practical**: includes end-to-end generation, baseline, packaging, smoke tests, and Colab training flow.
 
-## Quickstart
+## Formal OpenEnv Package Status
 
-Install dependencies:
+The primary environment is now a formal OpenEnv package under `envs/autoscale_env` with:
+
+- `openenv.yaml`
+- `pyproject.toml`
+- packaged server/client/models/environment modules
+- validated deployment modes (`openenv_serve`, `uv_run`, `python_module`)
+
+Validation command:
+
+```bash
+cd envs/autoscale_env
+openenv validate --verbose
+```
+
+## Repo Structure
+
+- `envs/autoscale_env/` - primary packaged OpenEnv environment (submission path)
+- `simulator.py` - simulator source of truth (state dynamics + reward)
+- `generate_traces.py` - synthetic workload traces
+- `hpa_policy.py`, `run_baseline.py` - heuristic baseline + trajectory export
+- `colab_train_rl.py` - packaged-environment Unsloth + TRL GRPO training script
+- `notebooks/unsloth_openenv_autoscale_grpo.ipynb` - Colab workflow
+- `rollout.py`, `train_rl.py`, `eval_policy.py` - rollout/training/evaluation utilities
+- `server.py`, `client.py`, `models.py`, `environment.py` - legacy compatibility wrappers
+
+## Quickstart (Packaged OpenEnv Primary Path)
+
+Install deps:
 
 ```bash
 python3 -m pip install -r requirements.txt
+python3 -m pip install uv openenv-core
 ```
 
 Generate traces:
 
 ```bash
-python3 generate_traces.py --num-traces 20 --episode-length 120 --output traces.jsonl --seed 7
+python3 generate_traces.py --num-traces 30 --output traces.jsonl --episode-length 120 --seed 7
 ```
 
-Run baseline (and optionally export expert trajectories):
+Validate package:
 
 ```bash
-python3 run_baseline.py --trace-path traces.jsonl --max-traces 20 --compare-random --export-trajectories --trajectory-output expert_trajectories.jsonl
+cd envs/autoscale_env
+python3 -m uv lock
+openenv validate --verbose
 ```
 
-Run OpenEnv-style server:
+Launch packaged environment:
+
+```bash
+cd envs/autoscale_env
+python3 -m uv run server
+```
+
+Smoke test from repo root:
+
+```bash
+python3 smoke_test_openenv.py --base-url http://127.0.0.1:8000 --policy random --seed 7 --trace-index 0
+```
+
+Legacy fallback launch (compatibility only):
 
 ```bash
 python3 server.py --trace-path traces.jsonl --host 127.0.0.1 --port 8000 --seed 7
 ```
 
-Run smoke test against server:
+## Colab / Unsloth Training
+
+Use `notebooks/unsloth_openenv_autoscale_grpo.ipynb` or run the script directly:
 
 ```bash
-python3 smoke_test_openenv.py --base-url http://127.0.0.1:8000 --policy random
+python3 colab_train_rl.py \
+  --base-url http://127.0.0.1:8000 \
+  --auto-launch-server \
+  --server-launch-mode packaged \
+  --env-package-dir envs/autoscale_env \
+  --trace-path traces.jsonl \
+  --init-model unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit \
+  --output-dir rl_model_unsloth_grpo \
+  --num-prompts 48 \
+  --prompt-seed 7 \
+  --max-steps 30 \
+  --learning-rate 5e-6 \
+  --batch-size 1 \
+  --gradient-accumulation-steps 2 \
+  --num-generations 4 \
+  --max-prompt-length 512 \
+  --max-completion-length 8 \
+  --seed 7
 ```
 
-Run SFT evaluation:
+## Results / Artifacts
 
-```bash
-python3 eval_sft.py --dataset-path sft_data/val.jsonl --model-path sft_model --max-examples 100 --print-examples 5
-```
+This repo demonstrates that packaged OpenEnv launch and Unsloth GRPO training run end-to-end and produce artifacts.
 
-## Notes
+Expected output directory:
 
-- This repo currently provides an **OpenEnv-style** custom environment wrapper.
-- If your local server is older than the latest models, `client.py` includes backward-compatible response normalization for health/reset/step/state payloads.
+- `rl_model_unsloth_grpo/`
+  - model/adapters saved by trainer
+  - tokenizer files
+  - `grpo_run_summary.json`
+
+Additional generated artifacts commonly used in this project:
+
+- `expert_trajectories.jsonl`
+- `rl_rollouts.jsonl`
+- `plots/*.png`
+
+## Submission Checklist
+
+- [ ] `cd envs/autoscale_env && python3 -m uv lock && openenv validate --verbose`
+- [ ] packaged smoke test (`reset` + `step`) succeeds
+- [ ] Colab training command completes with packaged launch path
+- [ ] output artifacts saved under `rl_model_unsloth_grpo`
+
+## Limitations and Next Steps
+
+- Training completion is verified; broad quantitative RL improvement claims are not asserted here.
+- Current reward evaluation in GRPO is single-step (`reset -> step`) by design for MVP stability.
+- Next steps:
+  - expand multi-step rollout reward functions for stronger policy learning
+  - run larger-scale policy comparisons across more traces
+  - add Docker deployment mode for full multi-mode OpenEnv packaging completeness
