@@ -15,14 +15,15 @@ Outputs:
 
 import argparse
 import json
+import socket
 import subprocess
 import time
 import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
+import torch
 from datasets import Dataset
-from trl import GRPOConfig, GRPOTrainer
 
 from client import OpenEnvClient
 from prompts import ACTIONS, format_observation_prompt
@@ -91,8 +92,20 @@ def ensure_trace_file(trace_path: Path) -> None:
     print(f"[trace-check] Generated trace file: {trace_path}")
 
 
+def is_port_in_use(host: str, port: int, timeout_s: float = 0.5) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(timeout_s)
+        return sock.connect_ex((host, port)) == 0
+
+
 def maybe_launch_server(args: argparse.Namespace) -> subprocess.Popen[str] | None:
     if not args.auto_launch_server:
+        return None
+    if is_port_in_use(args.server_host, args.server_port):
+        print(
+            f"[server-launch] Port {args.server_host}:{args.server_port} is already in use. "
+            "Assuming an existing server may already be running; skipping auto-launch."
+        )
         return None
     ensure_trace_file(args.trace_path)
     cmd = [
@@ -201,13 +214,33 @@ def load_unsloth_model_and_tokenizer(args: argparse.Namespace):
     return model, tokenizer
 
 
+def load_grpo_classes():
+    # Keep TRL import after Unsloth patching for compatibility.
+    from trl import GRPOConfig, GRPOTrainer
+
+    return GRPOConfig, GRPOTrainer
+
+
+def ensure_cuda_or_die() -> tuple[bool, str]:
+    cuda_available = bool(torch.cuda.is_available())
+    if not cuda_available:
+        raise RuntimeError("GPU runtime is required. In Colab: Runtime -> Change runtime type -> GPU")
+    gpu_name = str(torch.cuda.get_device_name(0))
+    return cuda_available, gpu_name
+
+
 def main() -> None:
     _configure_nonfatal_warning_filters()
     args = parse_args()
+    cuda_available, gpu_name = ensure_cuda_or_die()
     print(
-        "[startup] base_url={base_url} init_model={init_model} output_dir={output_dir} "
-        "num_prompts={num_prompts} max_steps={max_steps}".format(
+        "[startup] cuda_available={cuda_available} gpu_name={gpu_name} "
+        "base_url={base_url} server_port={server_port} init_model={init_model} "
+        "output_dir={output_dir} num_prompts={num_prompts} max_steps={max_steps}".format(
+            cuda_available=cuda_available,
+            gpu_name=gpu_name,
             base_url=args.base_url,
+            server_port=args.server_port,
             init_model=args.init_model,
             output_dir=args.output_dir,
             num_prompts=args.num_prompts,
@@ -225,6 +258,7 @@ def main() -> None:
         trace_index=args.trace_index,
     )
     model, tokenizer = load_unsloth_model_and_tokenizer(args)
+    GRPOConfig, GRPOTrainer = load_grpo_classes()
 
     grpo_config = GRPOConfig(
         output_dir=str(args.output_dir),
