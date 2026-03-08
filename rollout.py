@@ -16,6 +16,13 @@ def normalize_action_output(text: str) -> str:
     return text.strip().splitlines()[0].strip() if text.strip() else ""
 
 
+def coerce_legal_action(raw_text: str, fallback: str = "hold") -> tuple[str, str, bool]:
+    normalized = normalize_action_output(raw_text)
+    is_valid = normalized in LEGAL_ACTIONS
+    chosen = normalized if is_valid else fallback
+    return chosen, normalized, is_valid
+
+
 @dataclass
 class StepTransition:
     timestep: int
@@ -121,9 +128,8 @@ def run_episode(
     )
     while not done:
         raw = policy.choose_raw(obs)
-        normalized = normalize_action_output(raw)
-        chosen = normalized if normalized in LEGAL_ACTIONS else "hold"
-        if normalized not in LEGAL_ACTIONS:
+        chosen, normalized, is_valid = coerce_legal_action(raw)
+        if not is_valid:
             rollout.invalid_output_count += 1
         step = client.step(chosen)
         next_obs = step.observation.model_dump()
