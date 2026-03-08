@@ -17,6 +17,7 @@ import argparse
 import json
 import subprocess
 import time
+import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
@@ -26,6 +27,13 @@ from trl import GRPOConfig, GRPOTrainer
 from client import OpenEnvClient
 from prompts import ACTIONS, format_observation_prompt
 from rollout import coerce_legal_action, normalize_action_output
+
+
+def _configure_nonfatal_warning_filters() -> None:
+    # Colab/Unsloth stacks sometimes emit optional-extension warnings (torchao, etc.).
+    # Keep output readable unless execution actually fails.
+    warnings.filterwarnings("ignore", message=".*torchao.*", category=UserWarning)
+    warnings.filterwarnings("ignore", message=".*torchao.*", category=RuntimeWarning)
 
 
 def parse_args() -> argparse.Namespace:
@@ -103,16 +111,21 @@ def maybe_launch_server(args: argparse.Namespace) -> subprocess.Popen[str] | Non
 
 
 def wait_for_health(client: OpenEnvClient, timeout_s: float) -> None:
+    last_error: str | None = None
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         try:
             health = client.health()
             if health.ok:
                 return
+            last_error = f"/health returned ok={health.ok} message={health.message!r}"
         except Exception:
-            pass
+            last_error = "Could not connect to /health endpoint"
         time.sleep(0.5)
-    raise RuntimeError(f"Environment did not become healthy within {timeout_s} seconds.")
+    detail = f" Last observed issue: {last_error}" if last_error else ""
+    raise RuntimeError(
+        f"Environment preflight failed: {client.base_url}/health not reachable/healthy within {timeout_s:.1f}s.{detail}"
+    )
 
 
 def build_seed_prompt_dataset(
@@ -189,7 +202,18 @@ def load_unsloth_model_and_tokenizer(args: argparse.Namespace):
 
 
 def main() -> None:
+    _configure_nonfatal_warning_filters()
     args = parse_args()
+    print(
+        "[startup] base_url={base_url} init_model={init_model} output_dir={output_dir} "
+        "num_prompts={num_prompts} max_steps={max_steps}".format(
+            base_url=args.base_url,
+            init_model=args.init_model,
+            output_dir=args.output_dir,
+            num_prompts=args.num_prompts,
+            max_steps=args.max_steps,
+        )
+    )
     server_proc = maybe_launch_server(args)
     client = OpenEnvClient(args.base_url)
     wait_for_health(client, timeout_s=args.server_wait_seconds)
