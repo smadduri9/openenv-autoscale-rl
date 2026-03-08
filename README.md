@@ -128,13 +128,6 @@ Additional generated artifacts commonly used in this project:
 - `rl_rollouts.jsonl`
 - `plots/*.png`
 
-## Submission Checklist
-
-- [ ] `cd envs/autoscale_env && python3 -m uv lock && openenv validate --verbose`
-- [ ] packaged smoke test (`reset` + `step`) succeeds
-- [ ] Colab training command completes with packaged launch path
-- [ ] output artifacts saved under `rl_model_unsloth_grpo`
-
 ## Limitations and Next Steps
 
 - Training completion is verified; broad quantitative RL improvement claims are not asserted here.
